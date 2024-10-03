@@ -3,101 +3,178 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
+	"path"
+	"time"
 
-	"github.com/bafto/SpotifyBackupper/config"
+	"github.com/spf13/viper"
 	spotify "github.com/zmb3/spotify/v2"
-	"golang.org/x/oauth2"
+	spotifyauth "github.com/zmb3/spotify/v2/auth"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
-var (
-	conf   *config.Config
-	ctx    context.Context
-	client *spotify.Client
-)
+func configure() {
+	viper.SetDefault("spotify_client_id", "")
+	viper.SetDefault("spotify_client_secret", "")
+	viper.SetDefault("log_level", "INFO")
+	viper.SetDefault("timeout", time.Second*10)
+	viper.SetDefault("playlist_urls", []string{})
+	viper.SetDefault("file_prefix", "spbu_backup_")
+
+	viper.SetEnvPrefix("SPBU")
+	viper.AutomaticEnv()
+
+	viper.AddConfigPath(".")
+	viper.SetConfigName("spbu_config")
+	viper.SetConfigType("yaml")
+
+	if err := viper.ReadInConfig(); err != nil {
+		panic(err)
+	}
+}
+
+// returns the access token
+func authenticate(ctx context.Context, clientContext context.Context) (*spotify.Client, error) {
+	config := &clientcredentials.Config{
+		ClientID:     viper.GetString("spotify_client_id"),
+		ClientSecret: viper.GetString("spotify_client_secret"),
+		TokenURL:     spotifyauth.TokenURL,
+	}
+	token, err := config.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token: %w", err)
+	}
+
+	httpClient := spotifyauth.New().Client(clientContext, token)
+	return spotify.New(httpClient), nil
+}
 
 func main() {
 	var err error
-	ctx = context.Background()
-	conf, err = config.LoadFromFile("config.json")
+	ctx := context.Background()
+
+	configure()
+
+	slog.Info("authenticating")
+	authCtx, cancelAuthCtx := context.WithTimeout(ctx, viper.GetDuration("timeout"))
+	defer cancelAuthCtx()
+	client, err := authenticate(authCtx, ctx)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("authentication failed", "err", err)
+		return
 	}
 
-	authconfig := &oauth2.Config{
-		ClientID:     conf.SPOTIFY_ID,
-		ClientSecret: conf.SPOTIFY_SECRET,
-	}
-
-	client = spotify.New(authconfig.Client(ctx, &conf.Token))
-	playlists, err := client.CurrentUsersPlaylists(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	wrappedPlaylists := make([]PlaylistWrapper, 0, playlists.Total)
-	for _, playlist := range playlists.Playlists {
-		wrapped, err := wrapPlaylist(playlist)
+	var playlists []*spotify.FullPlaylist
+	for _, url := range viper.GetStringSlice("playlist_urls") {
+		slog.Info("getting playlist", "url", url)
+		playlistID, err := getPlaylistIdFromURL(url)
 		if err != nil {
-			log.Println(err)
+			slog.Warn("unable to parse playlist ID from url", "url", url, "err", err)
+			continue
+		}
+		playlist, err := client.GetPlaylist(ctx, spotify.ID(playlistID))
+		if err != nil {
+			slog.Warn("unable to get playlist data", "playlist-id", url, "err", err)
+			continue
+		}
+
+		playlists = append(playlists, playlist)
+	}
+
+	wrappedPlaylists := make([]PlaylistWrapper, 0, len(playlists))
+	for _, playlist := range playlists {
+		slog.Info("wrapping playlist", "playlist-id", playlist.ID)
+		wrapped, err := wrapPlaylist(ctx, client, playlist)
+		if err != nil {
+			slog.Warn("unable to wrap playlist", "playlist-id", playlist.ID, "err", err)
 			continue
 		}
 		wrappedPlaylists = append(wrappedPlaylists, wrapped)
 	}
+
 	file, err := json.MarshalIndent(wrappedPlaylists, "", "\t")
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("marshal json error", "err", err)
+		return
 	}
-	err = os.WriteFile(conf.BackupPath, file, os.ModePerm)
+	file_path := viper.GetString("file_prefix") + time.Now().Format("2006-01-02_15-04-05") + ".json"
+	slog.Info("writing to file", "path", file_path)
+	err = os.WriteFile(file_path, file, os.ModePerm)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("write file error", "err", err)
 	}
 }
 
-func GetAllTracksInPlaylist(playlistID spotify.ID) ([]spotify.PlaylistTrack, error) {
-	tracks, err := client.GetPlaylistTracks(ctx, playlistID)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]spotify.PlaylistTrack, 0, tracks.Total)
-	result = append(result, tracks.Tracks...)
-	for offset := len(tracks.Tracks); offset < tracks.Total; offset = offset + len(tracks.Tracks) {
-		tracks, err = client.GetPlaylistTracks(ctx, playlistID, spotify.Offset(offset))
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, tracks.Tracks...)
-	}
-	return result, nil
-}
-
-type TrackWrapper struct {
+type ItemWrapper struct {
+	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	Artists []string `json:"artists"`
 	AddedAt string   `json:"addedat"`
 }
 
 type PlaylistWrapper struct {
-	Name   string         `json:"name"`
-	Tracks []TrackWrapper `json:"tracks"`
+	ID    string        `json:"id"`
+	Name  string        `json:"name"`
+	Items []ItemWrapper `json:"tracks"`
 }
 
-func wrapPlaylist(playlist spotify.SimplePlaylist) (result PlaylistWrapper, err error) {
+func wrapPlaylist(ctx context.Context, client *spotify.Client, playlist *spotify.FullPlaylist) (result PlaylistWrapper, err error) {
 	result.Name = playlist.Name
-	tracks, err := GetAllTracksInPlaylist(playlist.ID)
+	playlistItems, err := getAllPlaylistItems(ctx, client, playlist.ID)
 	if err != nil {
-		return result, err
+		slog.Warn("unable to get playlist Items", "playlist-id", playlist.ID, "err", err)
+		return PlaylistWrapper{}, err
 	}
-	result.Tracks = make([]TrackWrapper, 0, len(tracks))
-	for i, track := range tracks {
-		result.Tracks = append(result.Tracks, TrackWrapper{
-			Name:    track.Track.Name,
-			Artists: make([]string, 0, len(track.Track.Artists)),
-			AddedAt: track.AddedAt,
-		})
-		for _, artist := range track.Track.Artists {
-			result.Tracks[i].Artists = append(result.Tracks[i].Artists, artist.Name)
+	return PlaylistWrapper{
+		ID:   string(playlist.ID),
+		Name: playlist.Name,
+		Items: map_slice(playlistItems, func(item spotify.PlaylistItem) ItemWrapper {
+			return ItemWrapper{
+				ID:   string(item.Track.Track.ID),
+				Name: item.Track.Track.Name,
+				Artists: map_slice(item.Track.Track.Artists, func(artist spotify.SimpleArtist) string {
+					return artist.Name
+				}),
+				AddedAt: item.AddedAt,
+			}
+		}),
+	}, nil
+}
+
+func getAllPlaylistItems(ctx context.Context, client *spotify.Client, playlistId spotify.ID) ([]spotify.PlaylistItem, error) {
+	page, err := client.GetPlaylistItems(ctx, playlistId)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]spotify.PlaylistItem, 0, page.Total)
+	items = append(items, page.Items...)
+	for {
+		err = client.NextPage(ctx, page)
+		items = append(items, page.Items...)
+		if err == spotify.ErrNoMorePages {
+			return items, nil
+		}
+		if err != nil {
+			return items, err
 		}
 	}
-	return result, nil
+}
+
+func getPlaylistIdFromURL(playlistUrl string) (string, error) {
+	parsed, err := url.Parse(playlistUrl)
+	if err != nil {
+		return "", err
+	}
+	return path.Base(parsed.Path), nil
+}
+
+func map_slice[T, R any](s []T, f func(T) R) []R {
+	result := make([]R, 0, len(s))
+	for i := range s {
+		result = append(result, f(s[i]))
+	}
+	return result
 }

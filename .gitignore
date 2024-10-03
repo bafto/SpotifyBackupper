@@ -1,2 +1,5 @@
 *.json
 Release
+*.exe
+*.yaml
+*.json

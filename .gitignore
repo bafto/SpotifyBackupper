@@ -4,3 +4,4 @@ Release
 *.yaml
 *.json
 SpotifyBackup
+crontab.txt

@@ -6,6 +6,8 @@ RUN go build -ldflags "-s -w" -o SpotifyBackupper .
 
 FROM alpine as run
 
+RUN apk add git
+
 COPY --from=build /app/SpotifyBackupper /app/SpotifyBackupper
 
 COPY entrypoint.sh /entrypoint.sh

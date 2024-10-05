@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 )
 
@@ -13,6 +14,15 @@ func isRepo(ctx context.Context, repo string) bool {
 		return false
 	}
 	return true
+}
+
+func hasStagedChanges(ctx context.Context, repo string) bool {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet")
+	cmd.Dir = repo
+	if err := cmd.Run(); err != nil {
+		return cmd.ProcessState.ExitCode() == 1
+	}
+	return cmd.ProcessState.ExitCode() == 1
 }
 
 // creates a git repository in path if it does not yet exist
@@ -34,6 +44,11 @@ func CommitAndPushChanges(ctx context.Context, repo, msg string) error {
 	cmd.Dir = repo
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to stage changes: %w", err)
+	}
+
+	if !hasStagedChanges(ctx, repo) {
+		slog.Info("no staged changes to commit")
+		return nil
 	}
 
 	cmd = exec.CommandContext(ctx, "git", "commit", "-m", msg)

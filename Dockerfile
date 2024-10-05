@@ -9,6 +9,6 @@ FROM alpine as run
 COPY --from=build /app/SpotifyBackupper .
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod 755 /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 CMD [ "/entrypoint.sh" ]

@@ -1,4 +1,5 @@
 #!/bin/sh
 
 crontab /crontab.txt
-crond -f -l 5
+echo "starting cronjob" > /dev/stdout
+crond -f -l 5 > /dev/stdout

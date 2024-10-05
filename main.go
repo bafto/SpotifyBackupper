@@ -8,8 +8,11 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/bafto/SpotifyBackupper/git"
 	"github.com/spf13/viper"
 	spotify "github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
@@ -22,7 +25,7 @@ func configure() {
 	viper.SetDefault("log_level", "INFO")
 	viper.SetDefault("timeout", time.Second*10)
 	viper.SetDefault("playlist_urls", []string{})
-	viper.SetDefault("file_prefix", "spbu_backup_")
+	viper.SetDefault("repo_origin", "")
 
 	viper.SetEnvPrefix("SPBU")
 	viper.AutomaticEnv()
@@ -93,6 +96,7 @@ func main() {
 			continue
 		}
 		wrappedPlaylists = append(wrappedPlaylists, wrapped)
+		slog.Info("wrapped playlist", "playlist-id", wrapped.ID)
 	}
 
 	file, err := json.MarshalIndent(wrappedPlaylists, "", "\t")
@@ -100,11 +104,32 @@ func main() {
 		slog.Error("marshal json error", "err", err)
 		return
 	}
-	file_path := viper.GetString("file_prefix") + time.Now().Format("2006-01-02_15-04-05") + ".json"
-	slog.Info("writing to file", "path", file_path)
-	err = os.WriteFile(file_path, file, os.ModePerm)
+
+	repo_origin := viper.GetString("repo_origin")
+	repo_url, err := url.Parse(repo_origin)
 	if err != nil {
+		slog.Error("failed to parse repo_origin", "err", err, "origin", repo_origin)
+	}
+	repo_name := strings.TrimSuffix(filepath.Base(repo_url.Path), filepath.Ext(repo_url.Path))
+
+
+	slog.Info("checking/cloning repo")
+	if err := git.CreateRepoIfNotExists(ctx, repo_name, repo_origin); err != nil {
+		slog.Error("failed to initialized git repo", "err", err)
+		return
+	}
+
+	file_path := repo_name + "/spbu_backup.json"
+	slog.Info("writing to file", "path", file_path)
+	if err = os.WriteFile(file_path, file, os.ModePerm); err != nil {
 		slog.Error("write file error", "err", err)
+		return
+	}
+
+	slog.Info("committing and pushing changes")
+	if err := git.CommitAndPushChanges(ctx, repo_name, time.Now().Format("backup 2006-01-02_15-04-05")); err != nil {
+		slog.Error("commit and push error", "err", err)
+		return
 	}
 }
 
@@ -153,13 +178,13 @@ func getAllPlaylistItems(ctx context.Context, client *spotify.Client, playlistId
 	items = append(items, page.Items...)
 	for {
 		err = client.NextPage(ctx, page)
-		items = append(items, page.Items...)
 		if err == spotify.ErrNoMorePages {
 			return items, nil
 		}
 		if err != nil {
 			return items, err
 		}
+		items = append(items, page.Items...)
 	}
 }
 

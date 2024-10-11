@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bafto/SpotifyBackupper/git"
+	"github.com/pingcap/log"
 	"github.com/spf13/viper"
 	spotify "github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
@@ -26,6 +27,8 @@ func configure() {
 	viper.SetDefault("timeout", time.Second*10)
 	viper.SetDefault("playlist_urls", []string{})
 	viper.SetDefault("repo_origin", "")
+	viper.SetDefault("git_user_name", "")
+	viper.SetDefault("git_user_email", "")
 
 	viper.SetEnvPrefix("SPBU")
 	viper.AutomaticEnv()
@@ -60,6 +63,11 @@ func main() {
 	ctx := context.Background()
 
 	configure()
+
+	slog.Info("setting git user info")
+	if err := git.ConfigureUser(ctx, viper.GetString("git_user_name"), viper.GetString("git_user_email")); err != nil {
+		log.Warn("failed to configure git user", "err", err)
+	}
 
 	slog.Info("authenticating")
 	authCtx, cancelAuthCtx := context.WithTimeout(ctx, viper.GetDuration("timeout"))
@@ -111,7 +119,6 @@ func main() {
 		slog.Error("failed to parse repo_origin", "err", err, "origin", repo_origin)
 	}
 	repo_name := strings.TrimSuffix(filepath.Base(repo_url.Path), filepath.Ext(repo_url.Path))
-
 
 	slog.Info("checking/cloning repo")
 	if err := git.CreateRepoIfNotExists(ctx, repo_name, repo_origin); err != nil {

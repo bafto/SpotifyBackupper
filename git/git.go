@@ -64,3 +64,16 @@ func CommitAndPushChanges(ctx context.Context, repo, msg string) error {
 	}
 	return nil
 }
+
+func ConfigureUser(ctx context.Context, name, email string) error {
+	cmd := exec.CommandContext(ctx, "git", "config", "--global", "user.name", name)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed set user name", err)
+	}
+
+	cmd = exec.CommandContext(ctx, "git", "config", "--global", "user.email", email)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed set user email", err)
+	}
+	return nil
+}

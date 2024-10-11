@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bafto/SpotifyBackupper/git"
-	"github.com/pingcap/log"
 	"github.com/spf13/viper"
 	spotify "github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
@@ -66,7 +65,7 @@ func main() {
 
 	slog.Info("setting git user info")
 	if err := git.ConfigureUser(ctx, viper.GetString("git_user_name"), viper.GetString("git_user_email")); err != nil {
-		log.Warn("failed to configure git user", "err", err)
+		slog.Warn("failed to configure git user", "err", err)
 	}
 
 	slog.Info("authenticating")

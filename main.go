@@ -140,6 +140,7 @@ func main() {
 }
 
 type ItemWrapper struct {
+	Index   int      `json:"index"`
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	Artists []string `json:"artists"`
@@ -162,11 +163,12 @@ func wrapPlaylist(ctx context.Context, client *spotify.Client, playlist *spotify
 	return PlaylistWrapper{
 		ID:   string(playlist.ID),
 		Name: playlist.Name,
-		Items: map_slice(playlistItems, func(item spotify.PlaylistItem) ItemWrapper {
+		Items: map_slice(playlistItems, func(i int, item spotify.PlaylistItem) ItemWrapper {
 			return ItemWrapper{
+				Index: i,
 				ID:   string(item.Track.Track.ID),
 				Name: item.Track.Track.Name,
-				Artists: map_slice(item.Track.Track.Artists, func(artist spotify.SimpleArtist) string {
+				Artists: map_slice(item.Track.Track.Artists, func(i int, artist spotify.SimpleArtist) string {
 					return artist.Name
 				}),
 				AddedAt: item.AddedAt,
@@ -202,10 +204,10 @@ func getPlaylistIdFromURL(playlistUrl string) (string, error) {
 	return path.Base(parsed.Path), nil
 }
 
-func map_slice[T, R any](s []T, f func(T) R) []R {
+func map_slice[T, R any](s []T, f func(int, T) R) []R {
 	result := make([]R, 0, len(s))
 	for i := range s {
-		result = append(result, f(s[i]))
+		result = append(result, f(i, s[i]))
 	}
 	return result
 }

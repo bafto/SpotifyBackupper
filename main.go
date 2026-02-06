@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -63,9 +65,11 @@ func main() {
 
 	configure()
 
-	slog.Info("setting git user info")
-	if err := git.ConfigureUser(ctx, viper.GetString("git_user_name"), viper.GetString("git_user_email")); err != nil {
-		slog.Warn("failed to configure git user", "err", err)
+	if viper.GetString("git_user_name") != "" {
+		slog.Info("setting git user info")
+		if err := git.ConfigureUser(ctx, viper.GetString("git_user_name"), viper.GetString("git_user_email")); err != nil {
+			slog.Warn("failed to configure git user", "err", err)
+		}
 	}
 
 	slog.Info("authenticating")
@@ -106,12 +110,6 @@ func main() {
 		slog.Info("wrapped playlist", "playlist-id", wrapped.ID)
 	}
 
-	file, err := json.MarshalIndent(wrappedPlaylists, "", "\t")
-	if err != nil {
-		slog.Error("marshal json error", "err", err)
-		return
-	}
-
 	repo_origin := viper.GetString("repo_origin")
 	repo_url, err := url.Parse(repo_origin)
 	if err != nil {
@@ -125,7 +123,18 @@ func main() {
 		return
 	}
 
-	file_path := repo_name + "/spbu_backup.json"
+	file_path := filepath.Join(repo_name, "/spbu_backup.json")
+
+	if err := checkDeletedItems(repo_name, file_path, wrappedPlaylists); err != nil {
+		slog.Warn("Error comparing old to new playlists", "err", err)
+	}
+
+	file, err := json.MarshalIndent(wrappedPlaylists, "", "\t")
+	if err != nil {
+		slog.Error("marshal json error", "err", err)
+		return
+	}
+
 	slog.Info("writing to file", "path", file_path)
 	if err = os.WriteFile(file_path, file, os.ModePerm); err != nil {
 		slog.Error("write file error", "err", err)
@@ -160,20 +169,24 @@ func wrapPlaylist(ctx context.Context, client *spotify.Client, playlist *spotify
 		slog.Warn("unable to get playlist Items", "playlist-id", playlist.ID, "err", err)
 		return PlaylistWrapper{}, err
 	}
+	items := map_slice(playlistItems, func(i int, item spotify.PlaylistItem) ItemWrapper {
+		return ItemWrapper{
+			Index: i,
+			ID:    string(item.Track.Track.ID),
+			Name:  item.Track.Track.Name,
+			Artists: map_slice(item.Track.Track.Artists, func(i int, artist spotify.SimpleArtist) string {
+				return artist.Name
+			}),
+			AddedAt: item.AddedAt,
+		}
+	})
+	slices.SortStableFunc(items, func(a, b ItemWrapper) int {
+		return a.Index - b.Index
+	})
 	return PlaylistWrapper{
-		ID:   string(playlist.ID),
-		Name: playlist.Name,
-		Items: map_slice(playlistItems, func(i int, item spotify.PlaylistItem) ItemWrapper {
-			return ItemWrapper{
-				Index: i,
-				ID:   string(item.Track.Track.ID),
-				Name: item.Track.Track.Name,
-				Artists: map_slice(item.Track.Track.Artists, func(i int, artist spotify.SimpleArtist) string {
-					return artist.Name
-				}),
-				AddedAt: item.AddedAt,
-			}
-		}),
+		ID:    string(playlist.ID),
+		Name:  playlist.Name,
+		Items: items,
 	}, nil
 }
 
@@ -194,6 +207,63 @@ func getAllPlaylistItems(ctx context.Context, client *spotify.Client, playlistId
 		}
 		items = append(items, page.Items...)
 	}
+}
+
+func checkDeletedItems(repo_name, filePath string, currentPlaylists []PlaylistWrapper) error {
+	if _, err := os.Stat(filePath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var oldPlaylists []PlaylistWrapper
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&oldPlaylists); err != nil {
+		return err
+	}
+
+	var diffPlaylists []PlaylistWrapper
+
+	for _, currentPlaylist := range currentPlaylists {
+		i := slices.IndexFunc(currentPlaylists, func(p PlaylistWrapper) bool {
+			return p.ID == currentPlaylist.ID
+		})
+		oldPlaylist := oldPlaylists[i]
+
+		if len(oldPlaylist.Items) <= len(currentPlaylist.Items) {
+			continue
+		}
+
+		slog.Info("Playlist got smaller", "playlist-id", oldPlaylist.ID, "playlist-name", oldPlaylist.Name)
+
+		diff := PlaylistWrapper{ID: currentPlaylist.ID, Name: currentPlaylist.Name, Items: nil}
+		for i := range oldPlaylist.Items {
+			if slices.IndexFunc(currentPlaylist.Items, func(w ItemWrapper) bool {
+				return w.ID == oldPlaylist.Items[i].ID
+			}) == -1 {
+				diff.Items = append(diff.Items, oldPlaylist.Items[i])
+			}
+		}
+		diffPlaylists = append(diffPlaylists, diff)
+	}
+
+	diffPath := filepath.Join(repo_name, "/spbu_diff.json")
+
+	diffFile, err := json.MarshalIndent(diffPlaylists, "", "\t")
+	if err != nil {
+		return err
+	}
+
+	slog.Info("writing to diff file", "path", diffPath)
+	if err = os.WriteFile(diffPath, diffFile, os.ModePerm); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func getPlaylistIdFromURL(playlistUrl string) (string, error) {

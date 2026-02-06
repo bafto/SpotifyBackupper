@@ -32,8 +32,8 @@ func CreateRepoIfNotExists(ctx context.Context, repo, origin string) error {
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "clone", origin)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to clone repo: %w", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to clone repo: %w, %s", err, string(output))
 	}
 
 	return nil
@@ -42,8 +42,8 @@ func CreateRepoIfNotExists(ctx context.Context, repo, origin string) error {
 func CommitAndPushChanges(ctx context.Context, repo, msg string) error {
 	cmd := exec.CommandContext(ctx, "git", "add", ".")
 	cmd.Dir = repo
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to stage changes: %w", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to stage changes: %w, %s", err, string(output))
 	}
 
 	if !hasStagedChanges(ctx, repo) {
@@ -53,27 +53,27 @@ func CommitAndPushChanges(ctx context.Context, repo, msg string) error {
 
 	cmd = exec.CommandContext(ctx, "git", "commit", "-m", msg)
 	cmd.Dir = repo
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to commit changes: %w", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to commit changes: %w, %s", err, string(output))
 	}
 
 	cmd = exec.CommandContext(ctx, "git", "push", "origin", "master")
 	cmd.Dir = repo
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to push changes: %w", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to push changes: %w, %s", err, string(output))
 	}
 	return nil
 }
 
 func ConfigureUser(ctx context.Context, name, email string) error {
 	cmd := exec.CommandContext(ctx, "git", "config", "--global", "user.name", name)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed set user name", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed set user name: %w, %s", err, string(output))
 	}
 
 	cmd = exec.CommandContext(ctx, "git", "config", "--global", "user.email", email)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed set user email", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed set user email: %w, %s", err, string(output))
 	}
 	return nil
 }

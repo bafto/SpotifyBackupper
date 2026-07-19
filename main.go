@@ -232,6 +232,12 @@ func checkDeletedItems(repo_name, filePath string, currentPlaylists []PlaylistWr
 		i := slices.IndexFunc(currentPlaylists, func(p PlaylistWrapper) bool {
 			return p.ID == currentPlaylist.ID
 		})
+
+		if i >= len(oldPlaylists) {
+			slog.Warn("No old playlist available", "playlist-id", currentPlaylist.ID, "playlist-name", currentPlaylist.Name, "old-playlists-len", len(oldPlaylists), "index", i)
+			continue
+		}
+
 		oldPlaylist := oldPlaylists[i]
 
 		if len(oldPlaylist.Items) <= len(currentPlaylist.Items) {
